@@ -1,0 +1,75 @@
+name: FinSentinel CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1-5'
+
+env:
+  GCP_PROJECT: finsentinel-nlp
+  GCR_REGISTRY: us-central1-docker.pkg.dev
+  IMAGE_NAME: finsentinel-api
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -v --cov=api
+
+  train-and-evaluate:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Check model drift
+        run: python mlops/evidently_monitor.py
+      - name: Retrain if drift detected
+        run: python ml/train_finbert.py --check-drift
+
+  build-and-push:
+    needs: train-and-evaluate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
+      - name: Build and tag image
+        run: |
+          docker build -t $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:$GITHUB_SHA .
+          docker tag  $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:$GITHUB_SHA \
+                      $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:latest
+      - name: Push to Artifact Registry
+        run: docker push $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GCE
+        uses: google-github-actions/ssh-compute@v0
+        with:
+          instance_name: finsentinel-api
+          zone: us-central1-a
+          ssh_private_key: ${{ secrets.GCE_SSH_KEY }}
+          command: |
+            docker pull $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:latest
+            docker stop finsentinel || true
+            docker run -d --name finsentinel \
+              -p 8000:8000 \
+              -e GOOGLE_APPLICATION_CREDENTIALS=/app/creds.json \
+              -e MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_URI }} \
+              $GCR_REGISTRY/$GCP_PROJECT/$IMAGE_NAME:latest
