@@ -1,4 +1,5 @@
 import mlflow
+import mlflow.sklearn
 import lightgbm as lgb
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import classification_report, f1_score

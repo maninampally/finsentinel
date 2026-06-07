@@ -2,6 +2,7 @@ import time
 from typing import List, Optional
 
 import mlflow.pytorch
+from transformers import BertTokenizer
 import redis
 import torch
 from fastapi import FastAPI, HTTPException
@@ -12,6 +13,12 @@ app = FastAPI(title="FinSentinel API", version="2.0")
 cache = redis.Redis(host='redis', port=6379, decode_responses=True)
 model = mlflow.pytorch.load_model("models:/FinSentinel_Production/Production")
 model.eval()
+
+try:
+    tokenizer = BertTokenizer.from_pretrained("ProsusAI/finbert")
+except Exception as e:
+    tokenizer = None
+    print(f"Warning: could not load tokenizer: {e}")
 
 LABELS = {0: "NEGATIVE", 1: "NEUTRAL", 2: "POSITIVE"}
 
@@ -42,6 +49,9 @@ async def predict(request: HeadlineRequest):
         return eval(cached)
 
     start = time.time()
+    if tokenizer is None:
+        raise HTTPException(status_code=500, detail="Tokenizer not loaded; ensure transformers models are available")
+
     inputs = tokenizer(
         request.text,
         return_tensors="pt",
