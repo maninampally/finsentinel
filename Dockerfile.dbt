@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+# Install system deps needed for some dbt adapters
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    libpq-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/app
+
+# Install dbt core and the Postgres adapter (change adapter as needed)
+RUN pip install --no-cache-dir dbt-core dbt-postgres dbt-bigquery google-cloud-bigquery psycopg2-binary
+
+# Keep container available for running dbt commands interactively
+CMD ["tail", "-f", "/dev/null"]

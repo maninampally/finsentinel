@@ -1,14 +1,13 @@
 SELECT
-    GENERATE_UUID() AS article_id,
+    id AS article_id,
+    title,
+    summary AS cleaned_text,
+    content,
+    author,
     source,
-    headline,
-    cleaned_text,
-    tickers,
-    word_count,
-    TIMESTAMP_TRUNC(published_at, HOUR) AS published_hour,
-    DATE(published_at)                  AS published_date,
-    ingested_at
-FROM {{ source('finsentinel_raw', 'articles') }}
-WHERE cleaned_text IS NOT NULL
-  AND word_count >= 5
-  AND word_count <= 512
+    url,
+    CAST(published AS TIMESTAMP) AS published_at,
+    CAST(retrieved_at AS TIMESTAMP) AS ingested_at
+FROM {{ source('finsentinel_silver', 'articles') }}
+WHERE summary IS NOT NULL
+  AND LENGTH(summary) >= 20

@@ -1,56 +1,51 @@
 import json
+import os
 import time
+
 from google.cloud import pubsub_v1
-from newsapi import NewsApiClient
-import feedparser
+
+from ingestion.sources.newsapi_source import NewsAPISource
+from ingestion.sources.reddit_source import RedditSource
+from ingestion.sources.rss_source import RSSSource
 
 
 class FinancialNewsPublisher:
-    def __init__(self, project_id, topic_id):
-        self.publisher = pubsub_v1.PublisherClient()
+    def __init__(self, project_id: str, topic_id: str):
+        self.publisher  = pubsub_v1.PublisherClient()
         self.topic_path = self.publisher.topic_path(project_id, topic_id)
-        self.newsapi = NewsApiClient(api_key='YOUR_KEY')
 
-    def fetch_newsapi(self):
-        articles = self.newsapi.get_everything(
-            q='stocks OR earnings OR fed OR inflation OR revenue',
-            language='en',
-            sort_by='publishedAt',
-            page_size=100
+        self._newsapi = NewsAPISource(api_key=os.environ['NEWSAPI_KEY'])
+        self._rss     = RSSSource()
+
+        reddit_id     = os.environ.get('REDDIT_CLIENT_ID')
+        reddit_secret = os.environ.get('REDDIT_CLIENT_SECRET')
+        self._reddit  = (
+            RedditSource(
+                client_id=reddit_id,
+                client_secret=reddit_secret,
+                user_agent='finsentinel/1.0'
+            )
+            if reddit_id and reddit_secret else None
         )
-        return articles['articles']
 
-    def fetch_rss(self, feeds):
-        articles = []
-        rss_feeds = [
-            'https://feeds.bloomberg.com/markets/news.rss',
-            'https://www.investing.com/rss/news.rss',
-            'https://finance.yahoo.com/news/rssindex'
-        ]
-        for url in rss_feeds:
-            feed = feedparser.parse(url)
-            for entry in feed.entries:
-                articles.append({
-                    'title': entry.title,
-                    'summary': entry.get('summary', ''),
-                    'published': entry.get('published', ''),
-                    'source': url
-                })
+    def fetch_all(self) -> list:
+        articles = self._newsapi.fetch() + self._rss.fetch()
+        if self._reddit:
+            articles += self._reddit.fetch()
         return articles
 
-    def publish(self, article):
+    def publish(self, article: dict):
         data = json.dumps(article).encode('utf-8')
         future = self.publisher.publish(
             self.topic_path,
             data,
             source=article.get('source', 'unknown')
         )
-        return future.result()
+        future.result()
 
-    def run(self, interval_seconds=300):
+    def run(self, interval_seconds: int = 300):
         while True:
-            articles = self.fetch_newsapi()
-            articles += self.fetch_rss([])
+            articles = self.fetch_all()
             for article in articles:
                 self.publish(article)
             print(f"Published {len(articles)} articles")
@@ -59,7 +54,7 @@ class FinancialNewsPublisher:
 
 if __name__ == '__main__':
     publisher = FinancialNewsPublisher(
-        project_id='finsentinel-nlp',
-        topic_id='financial-news-stream'
+        project_id=os.environ['GCP_PROJECT_ID'],
+        topic_id=os.environ.get('PUBSUB_TOPIC', 'financial-news-stream')
     )
     publisher.run()

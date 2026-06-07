@@ -76,11 +76,7 @@ def ingest_once() -> int:
     for src in sources:
         try:
             if hasattr(src, 'fetch'):
-                if isinstance(src, RSSSource):
-                    items = src.fetch()
-                else:
-                    items = src.fetch()
-                all_articles.extend(items)
+                all_articles.extend(src.fetch())
         except Exception as e:
             print(f'Error fetching from source {src}: {e}')
 

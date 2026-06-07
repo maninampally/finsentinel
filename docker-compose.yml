@@ -21,7 +21,7 @@ services:
   dashboard:
     build:
       context: .
-      dockerfile: Dockerfile.streamlit
+      dockerfile: Dockerfile
     ports:
       - "8501:8501"
     environment:
@@ -30,3 +30,14 @@ services:
       - ./creds.json:/app/creds.json
     depends_on:
       - api
+
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbt
+    volumes:
+      - ./:/usr/src/app
+    working_dir: /usr/src/app/dbt
+    command: tail -f /dev/null
+    environment:
+      - DBT_PROFILES_DIR=/usr/src/app/dbt
