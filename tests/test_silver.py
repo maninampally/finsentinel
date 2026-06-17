@@ -6,13 +6,13 @@ def test_silver_file_and_basic_quality():
     assert p.exists(), f"{p} missing"
 
     df = pd.read_parquet(p)
-    assert len(df) == 173  # expected row count from dedupe
-    expected_cols = {"id","title","summary","content","source","published","retrieved_at"}
+    assert len(df) == 244
+    expected_cols = {"id", "title", "summary", "content", "author", "source", "url", "published", "retrieved_at"}
     assert expected_cols.issubset(set(df.columns))
 
     # summary should be mostly filled
     pct_missing_summary = df["summary"].isna().mean()
-    assert pct_missing_summary < 0.2  # fail if >20% missing
+    assert pct_missing_summary == 0
 
     # timestamps parseable
     assert pd.api.types.is_datetime64_any_dtype(df["published"])

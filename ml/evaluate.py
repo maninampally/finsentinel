@@ -1,23 +1,27 @@
 import mlflow
 import pandas as pd
 from mlflow.tracking import MlflowClient
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
 
 def compare_models(experiment_name: str = "finsentinel-sentiment") -> pd.DataFrame:
     client = MlflowClient()
     experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        print(f"No MLflow experiment found named '{experiment_name}'.")
+        return pd.DataFrame(columns=["run_name", "model", "val_f1", "run_id"])
+
     runs = client.search_runs(
         experiment_ids=[experiment.experiment_id],
-        order_by=["metrics.val_f1 DESC"]
+        order_by=["metrics.val_f1 DESC", "metrics.final_f1 DESC"],
     )
 
     records = []
     for run in runs:
+        metrics = run.data.metrics
         records.append({
             "run_name": run.data.tags.get("mlflow.runName"),
             "model":    run.data.params.get("model"),
-            "val_f1":   run.data.metrics.get("val_f1"),
+            "val_f1":   metrics.get("val_f1", metrics.get("final_f1")),
             "run_id":   run.info.run_id
         })
 
@@ -34,14 +38,21 @@ def promote_best_model(model_name: str = "FinSentinel_Production"):
         print("No model in Staging.")
         return
 
-    staging_f1 = float(client.get_metric_history(
-        staging[0].run_id, "final_f1")[0].value)
+    staging_metrics = client.get_metric_history(staging[0].run_id, "final_f1")
+    if not staging_metrics:
+        print("Staging model has no final_f1 metric.")
+        return
+
+    staging_f1 = float(staging_metrics[0].value)
 
     production = client.get_latest_versions(model_name, stages=["Production"])
     if production:
-        prod_f1 = float(client.get_metric_history(
-            production[0].run_id, "final_f1")[0].value)
-        should_promote = staging_f1 > prod_f1
+        prod_metrics = client.get_metric_history(production[0].run_id, "final_f1")
+        if not prod_metrics:
+            should_promote = True
+        else:
+            prod_f1 = float(prod_metrics[0].value)
+            should_promote = staging_f1 > prod_f1
     else:
         should_promote = True
 

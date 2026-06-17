@@ -1,3 +1,5 @@
+import hashlib
+import json
 import time
 from typing import List, Optional
 
@@ -43,10 +45,10 @@ class SentimentResponse(BaseModel):
 
 @app.post("/predict", response_model=SentimentResponse)
 async def predict(request: HeadlineRequest):
-    cache_key = f"pred:{hash(request.text)}"
+    cache_key = f"pred:{hashlib.sha256(request.text.encode('utf-8')).hexdigest()}"
     cached = cache.get(cache_key)
     if cached:
-        return eval(cached)
+        return SentimentResponse(**json.loads(cached))
 
     start = time.time()
     if tokenizer is None:
@@ -79,7 +81,7 @@ async def predict(request: HeadlineRequest):
         latency_ms=round(latency, 2)
     )
 
-    cache.setex(cache_key, 3600, str(result.dict()))
+    cache.setex(cache_key, 3600, json.dumps(result.dict()))
     return result
 
 
