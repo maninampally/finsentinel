@@ -13,7 +13,6 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-LABEL_MAP = {'negative': 0, 'neutral': 1, 'positive': 2}
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -43,7 +42,7 @@ class FinancialSentimentDataset(Dataset):
 def train_finbert():
     dataset = load_dataset("financial_phrasebank", "sentences_allagree")
     df = dataset['train'].to_pandas()
-    df['label'] = df['label'].map(LABEL_MAP)
+    # labels are already integers (0=negative, 1=neutral, 2=positive) from ClassLabel
 
     X_train, X_val, y_train, y_val = train_test_split(
         df['sentence'].tolist(), df['label'].tolist(),
