@@ -3,8 +3,6 @@ name: FinSentinel CI/CD Pipeline
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: '0 6 * * 1-5'
 
 env:
   GCP_PROJECT: finsentinel-nlp
@@ -22,22 +20,8 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest tests/ -v --cov=api
 
-  train-and-evaluate:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v1
-        with:
-          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-      - name: Check model drift
-        run: python mlops/evidently_monitor.py
-      - name: Retrain if drift detected
-        run: python ml/train_finbert.py --check-drift
-
   build-and-push:
-    needs: train-and-evaluate
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
