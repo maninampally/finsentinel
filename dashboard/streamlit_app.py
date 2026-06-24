@@ -1,16 +1,22 @@
 from datetime import datetime
+import os
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from google.cloud import bigquery
+from databricks import sql
 
 st.set_page_config(
     page_title="FinSentinel — Market Sentiment Intelligence",
     layout="wide"
 )
+
+# Databricks config
+DATABRICKS_HOST = os.getenv("DATABRICKS_HOST")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
+DATABRICKS_CATALOG = os.getenv("DATABRICKS_CATALOG", "finsentinel")
 
 st.title("FinSentinel — Real-Time Financial Sentiment Dashboard")
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -18,7 +24,7 @@ st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.sidebar.header("Controls")
 ticker = st.sidebar.selectbox(
     "Select Ticker",
-    ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'META', 'AMZN']
+    ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA', 'META', 'AMZN', 'JPM', 'BAC']
 )
 days = st.sidebar.slider("Days of history", 1, 30, 7)
 
@@ -29,41 +35,87 @@ col3.metric("Neutral Headlines", "203", "+2%")
 col4.metric("Model F1 Score",   "0.952", "+0.003")
 
 st.subheader(f"{ticker} Sentiment Trend — Last {days} Days")
-response = requests.get(f"http://api:8000/sentiment/{ticker}?days={days}")
-df = pd.DataFrame(response.json())
+
+@st.cache_data(ttl=300)
+def get_ticker_sentiment(ticker, days):
+    if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
+        return pd.DataFrame()
+    try:
+        with sql.connect(
+            host=DATABRICKS_HOST.replace("https://", "").replace("http://", ""),
+            token=DATABRICKS_TOKEN,
+            http_path="/sql/1.0/warehouses/default"
+        ) as connection:
+            cursor = connection.cursor()
+            query = f"""
+                SELECT
+                    date,
+                    article_count AS count,
+                    avg_word_count
+                FROM {DATABRICKS_CATALOG}.gold.sentiment_features_gold
+                WHERE ticker = %s
+                  AND date >= CURRENT_DATE() - INTERVAL {days} DAY
+                ORDER BY date DESC
+            """
+            cursor.execute(query, (ticker,))
+            results = [dict(row) for row in cursor.fetchall()]
+            return pd.DataFrame(results)
+    except Exception as e:
+        st.error(f"Failed to fetch sentiment data: {e}")
+        return pd.DataFrame()
+
+df = get_ticker_sentiment(ticker, days)
 
 if not df.empty:
     fig = px.line(
-        df, x='date', y='count', color='sentiment',
-        color_discrete_map={
-            'POSITIVE': '#00CC96',
-            'NEGATIVE': '#EF553B',
-            'NEUTRAL':  '#636EFA'
-        },
-        title=f"{ticker} Daily Sentiment Volume"
+        df, x='date', y='count',
+        title=f"{ticker} Daily Article Volume",
+        markers=True
     )
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No sentiment data available for this ticker.")
 
 col_left, col_right = st.columns([2, 1])
 
 with col_left:
-    st.subheader("Live Sentiment Feed")
-    client = bigquery.Client()
-    live_df = client.query("""
-        SELECT headline, sentiment, confidence, ticker, published_at
-        FROM `finsentinel-nlp.finsentinel_gold.predictions`
-        ORDER BY published_at DESC
-        LIMIT 20
-    """).to_dataframe()
+    st.subheader("Live Articles Feed")
 
-    st.dataframe(
-        live_df.style.applymap(
-            lambda x: 'color: green' if x == 'POSITIVE'
-            else 'color: red' if x == 'NEGATIVE' else '',
-            subset=['sentiment']
-        ),
-        use_container_width=True
-    )
+    @st.cache_data(ttl=60)
+    def get_live_articles():
+        if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
+            return pd.DataFrame()
+        try:
+            with sql.connect(
+                host=DATABRICKS_HOST.replace("https://", "").replace("http://", ""),
+                token=DATABRICKS_TOKEN,
+                http_path="/sql/1.0/warehouses/default"
+            ) as connection:
+                cursor = connection.cursor()
+                query = f"""
+                    SELECT
+                        article_id,
+                        title,
+                        ticker,
+                        published_at_ts,
+                        source,
+                        word_count
+                    FROM {DATABRICKS_CATALOG}.silver.articles_silver
+                    ORDER BY published_at_ts DESC
+                    LIMIT 20
+                """
+                cursor.execute(query)
+                results = [dict(row) for row in cursor.fetchall()]
+                return pd.DataFrame(results)
+        except Exception as e:
+            st.error(f"Failed to fetch articles: {e}")
+            return pd.DataFrame()
+
+    live_df = get_live_articles()
+    if not live_df.empty:
+        st.dataframe(live_df, use_container_width=True)
+    else:
+        st.info("No articles available.")
 
 with col_right:
     st.subheader("Market Sentiment Heatmap")

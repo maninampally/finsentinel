@@ -39,14 +39,24 @@ class FinancialSentimentDataset(Dataset):
         }
 
 
-def train_finbert():
-    dataset = load_dataset("financial_phrasebank", "sentences_allagree")
-    df = dataset['train'].to_pandas()
-    # labels are already integers (0=negative, 1=neutral, 2=positive) from ClassLabel
+def train_finbert(use_databricks=False, spark=None):
+    if use_databricks and spark:
+        # Read from Databricks Delta table
+        spark_df = spark.sql("""
+            SELECT cleaned_text AS sentence, 1 AS label
+            FROM finsentinel.silver.articles_silver
+            WHERE length(cleaned_text) >= 20
+            LIMIT 2769
+        """)
+        df = spark_df.toPandas()
+    else:
+        # Fallback: use HuggingFace dataset
+        dataset = load_dataset("financial_phrasebank", "sentences_allagree")
+        df = dataset['train'].to_pandas()
 
     X_train, X_val, y_train, y_val = train_test_split(
-        df['sentence'].tolist(), df['label'].tolist(),
-        test_size=0.2, stratify=df['label'], random_state=42
+        df['sentence'].tolist(), df.get('label', [1]*len(df)).tolist(),
+        test_size=0.2, stratify=df.get('label', [1]*len(df)), random_state=42
     )
 
     tokenizer = BertTokenizer.from_pretrained('ProsusAI/finbert')

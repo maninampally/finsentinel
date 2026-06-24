@@ -2,9 +2,9 @@
 
 **Real-Time Financial News Sentiment Intelligence Platform**
 
-Production-grade NLP + Data Engineering + MLOps on GCP — with an optional Databricks upgrade path.
+Production-grade NLP + Data Engineering + MLOps on **Databricks**.
 
-Fine-tunes **ProsusAI/FinBERT** on FinancialPhraseBank to classify financial headlines as `POSITIVE / NEUTRAL / NEGATIVE` with ~0.95 F1. Ingests 500+ daily articles from NewsAPI, RSS, and Reddit, streams through GCP Pub/Sub → Dataflow → BigQuery, and serves predictions via FastAPI with a live Streamlit dashboard.
+Fine-tunes **ProsusAI/FinBERT** on FinancialPhraseBank to classify financial headlines as `POSITIVE / NEUTRAL / NEGATIVE` with ~0.95 F1. Ingests 500+ daily articles from NewsAPI, RSS, and Reddit, streams through GCP Pub/Sub → Databricks Structured Streaming → Delta Lake, and serves predictions via FastAPI with a live Streamlit dashboard.
 
 ---
 
@@ -15,21 +15,19 @@ NewsAPI / RSS / Reddit / SEC EDGAR
           ↓
     GCP Pub/Sub  (real-time stream)
           ↓
-  Dataflow — Apache Beam
+  Databricks Structured Streaming
   (clean · dedupe · ticker extract)
           ↓
-  BigQuery  raw layer
+  Delta Lake  Bronze → Silver → Gold (medallion)
           ↓
-  dbt Core  staging → gold
+  Delta Live Tables  transformations
           ↓
   FinBERT inference  (FastAPI · Redis cache)
           ↓
-  Streamlit Dashboard  +  Evidently AI drift monitoring
+  Streamlit Dashboard  +  Databricks Model Monitoring
           ↓
-  GitHub Actions → Artifact Registry → GCE  (CI/CD)
+  Databricks Workflows  (orchestration)
 ```
-
-**Databricks edition** (v2): replaces Dataflow + dbt with Structured Streaming + Delta Live Tables + Feature Store + Databricks Model Serving. See [PROJECT.md](PROJECT.md).
 
 ---
 
@@ -54,46 +52,48 @@ finsentinel/
 │       ├── newsapi_source.py
 │       ├── rss_source.py
 │       └── reddit_source.py
-├── dataflow/
-│   └── pipeline.py            # Apache Beam streaming pipeline (v1)
-├── notebooks/                 # Databricks notebooks (v2)
-│   ├── 01_bronze_ingestion.py
-│   ├── 02_dlt_pipeline.py
-│   ├── 03_feature_store.py
-│   └── 04_train_finbert.py
-├── dbt/                       # BigQuery transformations (v1)
-│   └── models/
-│       ├── staging/stg_articles.sql
-│       └── gold/sentiment_features.sql
+├── databricks/
+│   ├── notebooks/
+│   │   ├── 01_streaming_ingest.py      # Pub/Sub → Bronze (Structured Streaming)
+│   │   ├── 02_drift_monitoring.py      # Drift detection + retraining trigger
+│   │   └── 03_promote_model.py         # Model registry promotion
+│   ├── dlt/
+│   │   └── dlt_pipeline.sql            # Delta Live Tables (Bronze → Silver → Gold)
+│   └── workflows/
+│       └── finsentinel_workflow.yml     # Databricks Workflows orchestration
 ├── ml/
-│   ├── train_finbert.py       # FinBERT fine-tuning (PyTorch)
-│   ├── train_bilstm.py        # BiLSTM baseline (TensorFlow)
-│   ├── train_lgbm.py          # LightGBM + TF-IDF baseline
-│   └── evaluate.py            # Model comparison + registry promotion
+│   ├── train_finbert.py       # FinBERT fine-tuning (PyTorch + Databricks)
+│   ├── train_bilstm.py        # BiLSTM baseline
+│   └── train_lgbm.py          # LightGBM baseline
 ├── mlops/
-│   ├── evidently_monitor.py   # Drift detection
 │   ├── mlflow_tracking.py     # MLflow helpers
-│   └── retrain_trigger.py     # Auto retraining
+│   └── evidently_monitor.py   # Drift monitoring (optional)
 ├── api/
 │   └── app.py                 # FastAPI — /predict, /batch_predict, /sentiment/{ticker}
 ├── dashboard/
-│   └── streamlit_app.py       # Live sentiment dashboard
-├── airflow/dags/
-│   ├── ingestion_dag.py       # Scheduled ingestion (every 5 min)
-│   └── retraining_dag.py      # Drift-triggered retraining
+│   └── streamlit_app.py       # Live sentiment dashboard (Databricks SQL)
 ├── tests/
 │   └── test_api.py
+├── scripts/
+│   └── start_api_mock.py      # Local testing
 ├── Dockerfile
-├── docker-compose.yml
 ├── requirements.txt
-└── .github/workflows/main.yml # CI/CD: test → build → push → deploy
+├── MIGRATION_TO_DATABRICKS.md # Setup + migration guide
+├── README.md
+└── .github/workflows/main.yml # CI/CD (GitHub Actions)
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Clone + install
+### 1. Prerequisites
+
+- **Databricks workspace** (AWS/Azure/GCP)
+- **GCP Pub/Sub** topic: `financial-news-stream`
+- **GCS bucket**: `gs://finsentinel-databricks/`
+
+### 2. Clone + install
 
 ```bash
 git clone https://github.com/<your-username>/finsentinel.git
@@ -103,77 +103,86 @@ pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-> Apache Beam / Dataflow has a separate install to avoid dependency conflicts:
-> ```bash
-> pip install -r requirements-dataflow.txt
-> ```
+### 3. Environment variables
 
-### 2. Environment variables
-
-Copy and fill in `.env.example`:
+Copy and update `.env`:
 
 ```bash
-cp .env.example .env
+# Databricks
+DATABRICKS_HOST=https://adb-XXXXXXX.databricks.us
+DATABRICKS_TOKEN=your_token
+DATABRICKS_CATALOG=finsentinel
+DATABRICKS_SCHEMA=gold
+
+# NewsAPI
+NEWSAPI_KEY=your_key
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# MLflow
+MLFLOW_TRACKING_URI=databricks
 ```
 
-| Variable | Required | Description |
-|---|---|---|
-| `GCP_PROJECT_ID` | Yes | GCP project ID |
-| `NEWSAPI_KEY` | Recommended | NewsAPI.org key |
-| `PUBSUB_TOPIC` | Yes (GCP) | Pub/Sub topic name |
-| `MLFLOW_TRACKING_URI` | Yes (API) | MLflow server URI |
-| `REDDIT_CLIENT_ID` | Optional | Reddit API client ID |
-| `REDDIT_CLIENT_SECRET` | Optional | Reddit API secret |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Yes (GCP) | Path to GCP service account JSON |
+### 4. Setup Databricks
 
-### 3. Run ingestion locally (no GCP needed)
+See [MIGRATION_TO_DATABRICKS.md](MIGRATION_TO_DATABRICKS.md) for step-by-step setup.
 
-Writes articles to `data/bronze/YYYY-MM-DD.ndjson`. RSS works without any API keys.
+Quick steps:
+```bash
+# Create cluster, mount GCS, create schemas
+# Deploy notebooks to /Workspace/finsentinel
+# Create Delta Live Tables pipeline
+# Create Databricks Workflow (every 5 minutes)
+```
+
+### 5. Run API locally (dev)
 
 ```bash
-python -m ingestion.runner
+uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
-### 4. Run with Docker
+Test:
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Apple beats earnings"}'
+```
+
+### 6. Run dashboard
 
 ```bash
-docker compose up
+streamlit run dashboard/streamlit_app.py
 ```
 
-Starts: FastAPI on `:8000` · Redis on `:6379` · Streamlit on `:8501`
+Visit: `http://localhost:8501`
 
 ---
 
-## GCP Setup (v1: GCP-Native)
+## GCP Setup (Pub/Sub + Ingestion)
 
 ```bash
-# Create project + enable APIs
+# Create GCP project
 gcloud projects create finsentinel-nlp
 gcloud config set project finsentinel-nlp
 
-gcloud services enable \
-  pubsub.googleapis.com \
-  dataflow.googleapis.com \
-  bigquery.googleapis.com \
-  artifactregistry.googleapis.com \
-  compute.googleapis.com
+# Enable Pub/Sub
+gcloud services enable pubsub.googleapis.com
 
-# Pub/Sub
+# Create Pub/Sub topic
 gcloud pubsub topics create financial-news-stream
 gcloud pubsub subscriptions create news-processor \
   --topic=financial-news-stream
 
-# BigQuery datasets
-bq mk --dataset finsentinel_raw
-bq mk --dataset finsentinel_gold
-bq mk --dataset finsentinel_monitoring
+# Create GCS bucket
+gsutil mb -l us-central1 gs://finsentinel-databricks/
 
-# GCS bucket for Dataflow temp
-gsutil mb -l us-central1 gs://finsentinel-artifacts
+# Grant Databricks service account permissions
+# (done in Databricks workspace secrets setup)
 ```
 
-Then run the Pub/Sub publisher:
-
+Pub/Sub ingestion:
 ```bash
 python -m ingestion.news_publisher
 ```
@@ -182,18 +191,29 @@ python -m ingestion.news_publisher
 
 ## Model Training
 
-### FinBERT (primary)
+### FinBERT (Databricks Job)
 
+Training runs automatically via Databricks Workflow every 5 minutes (if drift detected).
+
+Manual training on Databricks:
+```python
+# In Databricks notebook
+%run /Workspace/finsentinel/04_train_finbert
+
+# Trains on articles from finsentinel.silver.articles_silver
+# Logs to Databricks MLflow
+# Registers as FinSentinel_Production
+```
+
+Local training (for development):
 ```bash
 python ml/train_finbert.py
 ```
 
-Trains on [FinancialPhraseBank](https://huggingface.co/datasets/financial_phrasebank). Logs to MLflow. Registers best model as `FinSentinel_Production`.
-
-### All 3 models + comparison
+### All 3 models (baseline comparison)
 
 ```bash
-python ml/evaluate.py
+python ml/evaluate.py  # Compares FinBERT vs BiLSTM vs LightGBM
 ```
 
 ---
@@ -228,45 +248,27 @@ curl -X POST http://localhost:8000/predict \
 
 ## MLOps
 
-- **MLflow** — experiment tracking across 20+ runs, model registry (Staging → Production)
-- **Evidently AI** — text drift + prediction drift monitoring; auto-triggers Airflow retraining DAG when drift > 30%
-- **GitHub Actions** — on push to `main`: run tests → build Docker image → push to Artifact Registry → deploy to GCE
-
----
-
-## dbt (v1)
-
-```bash
-cd dbt
-dbt deps
-dbt run
-dbt test
-```
-
-Builds `stg_articles` (staging) and `sentiment_features` (gold) tables in BigQuery.
-
----
-
-## Databricks Edition (v2)
-
-Full migration guide, notebook code, and Databricks-specific setup in [PROJECT.md](PROJECT.md#v2-databricks-edition--full-code).
-
-Replaces: Dataflow → Structured Streaming, dbt → Delta Live Tables, DagsHub MLflow → Databricks Managed MLflow, FastAPI-only serving → Databricks Model Serving.
+- **Databricks MLflow** — experiment tracking, model registry (Staging → Production) managed natively
+- **Drift Monitoring** — custom Databricks notebook detects data drift; auto-triggers retraining when drift > 30%
+- **Databricks Workflows** — orchestrates streaming, DLT, drift checks, and retraining every 5 minutes
+- **Model Registry** — centralized model versioning + stage transitions (Staging → Production → Archived)
 
 ---
 
 ## Resume Bullets
 
-**GCP-Native (v1)**
-> Architected real-time financial news sentiment pipeline on GCP ingesting 500+ daily articles via Pub/Sub and Dataflow (Apache Beam) into BigQuery, with dbt Core transformations building ticker-level sentiment aggregations across a 4-tier medallion architecture.
-
-**Databricks (v2)**
-> Architected real-time financial news sentiment pipeline ingesting 500+ daily articles via GCP Pub/Sub into Databricks Structured Streaming, building a 3-tier Delta Lake medallion architecture (Bronze → Silver → Gold) with Delta Live Tables replacing dbt for declarative, pipeline-managed transformations.
-
-Full bullets → [PROJECT.md § Resume Bullets](PROJECT.md#resume-bullets)
+> Architected real-time financial news sentiment pipeline ingesting 500+ daily articles via GCP Pub/Sub into Databricks Structured Streaming, building 3-tier Delta Lake medallion (Bronze → Silver → Gold) with Delta Live Tables transformations and Databricks Workflows orchestration. Integrated FinBERT fine-tuning (PyTorch) with automatic drift detection triggering retraining via MLflow Model Registry. Deployed FastAPI inference service with Redis caching and Streamlit dashboard connected to Databricks SQL endpoints.
 
 ---
 
 ## Tech Stack
 
-`PyTorch` · `HuggingFace Transformers` · `FinBERT` · `TensorFlow` · `LightGBM` · `MLflow` · `Evidently AI` · `Apache Beam` · `GCP Pub/Sub` · `Dataflow` · `BigQuery` · `dbt Core` · `FastAPI` · `Redis` · `Streamlit` · `Plotly` · `Docker` · `GitHub Actions` · `Databricks` · `Delta Lake` · `Airflow`
+**ML:** `PyTorch` · `HuggingFace Transformers` · `FinBERT` · `TensorFlow` · `LightGBM` · `scikit-learn`
+
+**Data:** `Databricks` · `Delta Lake` · `Apache Spark` · `Structured Streaming` · `Delta Live Tables` · `GCP Pub/Sub`
+
+**MLOps:** `Databricks MLflow` · `Databricks Workflows` · `Databricks Model Registry`
+
+**API & Dashboard:** `FastAPI` · `Streamlit` · `Redis` · `Plotly` · `Databricks SQL`
+
+**DevOps:** `Docker` · `GitHub Actions` · `GCP`

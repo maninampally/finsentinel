@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import time
 from typing import List, Optional
+from urllib.parse import urljoin
 
 import mlflow.pytorch
 from transformers import BertTokenizer
@@ -9,13 +11,28 @@ import redis
 import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from databricks import sql
 
-app = FastAPI(title="FinSentinel API", version="2.0")
+app = FastAPI(title="FinSentinel API", version="3.0")
 
+# Config
+DATABRICKS_HOST = os.getenv("DATABRICKS_HOST", "https://adb-XXXXX.databricks.us")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
+DATABRICKS_CATALOG = os.getenv("DATABRICKS_CATALOG", "finsentinel")
+DATABRICKS_SCHEMA = os.getenv("DATABRICKS_SCHEMA", "gold")
+
+# Redis cache
 cache = redis.Redis(host='redis', port=6379, decode_responses=True)
-model = mlflow.pytorch.load_model("models:/FinSentinel_Production/Production")
-model.eval()
 
+# Model
+try:
+    model = mlflow.pytorch.load_model("models:/FinSentinel_Production/Production")
+    model.eval()
+except Exception as e:
+    print(f"Warning: could not load model: {e}")
+    model = None
+
+# Tokenizer
 try:
     tokenizer = BertTokenizer.from_pretrained("ProsusAI/finbert")
 except Exception as e:
@@ -95,22 +112,33 @@ async def batch_predict(request: BatchRequest):
 
 @app.get("/sentiment/{ticker}")
 async def ticker_sentiment(ticker: str, days: int = 7):
-    from google.cloud import bigquery
-    client = bigquery.Client()
-    query = f"""
-        SELECT
-            DATE(published_at)   AS date,
-            sentiment,
-            COUNT(*)             AS count,
-            AVG(confidence)      AS avg_confidence
-        FROM `finsentinel-nlp.finsentinel_gold.predictions`
-        WHERE ticker = '{ticker.upper()}'
-          AND published_at >= DATE_SUB(CURRENT_DATE(), INTERVAL {days} DAY)
-        GROUP BY date, sentiment
-        ORDER BY date DESC
-    """
-    results = client.query(query).to_dataframe()
-    return results.to_dict(orient='records')
+    if not DATABRICKS_HOST or not DATABRICKS_TOKEN:
+        raise HTTPException(status_code=500, detail="Databricks credentials not configured")
+
+    try:
+        with sql.connect(
+            host=DATABRICKS_HOST.replace("https://", "").replace("http://", ""),
+            token=DATABRICKS_TOKEN,
+            http_path="/sql/1.0/warehouses/default"
+        ) as connection:
+            cursor = connection.cursor()
+            query = f"""
+                SELECT
+                    date,
+                    ticker,
+                    article_count AS count,
+                    source_count,
+                    avg_word_count
+                FROM {DATABRICKS_CATALOG}.{DATABRICKS_SCHEMA}.sentiment_features_gold
+                WHERE ticker = %s
+                  AND date >= CURRENT_DATE() - INTERVAL {days} DAY
+                ORDER BY date DESC
+            """
+            cursor.execute(query, (ticker.upper(),))
+            results = [dict(row) for row in cursor.fetchall()]
+            return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Databricks query failed: {str(e)}")
 
 
 @app.get("/health")
