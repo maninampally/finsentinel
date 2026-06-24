@@ -1,8 +1,7 @@
-name: FinSentinel CI/CD Pipeline
+name: FinSentinel CI/CD Pipeline (DISABLED)
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   GCP_PROJECT: finsentinel-nlp
